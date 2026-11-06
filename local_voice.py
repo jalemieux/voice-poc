@@ -62,6 +62,7 @@ class TurnDetector:
         self._torch = torch
         self._it = VADIterator(load_silero_vad(), threshold=0.5, sampling_rate=MIC_RATE,
                                min_silence_duration_ms=silence_ms, speech_pad_ms=200)
+        set_torch_threads()  # load_silero_vad() sets torch to one thread, which slows Kokoro 3x
         self._buf = np.zeros(0, dtype=np.float32)
         self.silence_ms = silence_ms
 
@@ -80,6 +81,16 @@ class TurnDetector:
     def reset(self) -> None:
         self._it.reset_states()
         self._buf = np.zeros(0, dtype=np.float32)
+
+
+def set_torch_threads() -> None:
+    """Pin torch to the physical cores. silero_vad's loader sets it to 1, which makes Kokoro
+    take 1.6 s instead of 0.5 s per short sentence on a 16-thread Ryzen; call this after it."""
+    import os
+
+    import torch
+
+    torch.set_num_threads(int(os.getenv("TTS_THREADS", "0")) or max(1, (os.cpu_count() or 2) // 2))
 
 
 def stt_backend() -> str:
@@ -108,14 +119,7 @@ class LocalSpeech:
 
     def _load(self) -> None:
         t = time.monotonic()
-        import os
-
-        import torch
         from kokoro import KPipeline
-
-        # torch's default thread count left Kokoro at 1.6 s per short sentence on a 16-thread
-        # Ryzen; pinned to the physical core count it takes 0.5 s. No effect on Apple Silicon.
-        torch.set_num_threads(int(os.getenv("TTS_THREADS", "0")) or max(1, (os.cpu_count() or 2) // 2))
 
         if self.backend == "mlx":
             import mlx_whisper
@@ -132,7 +136,7 @@ class LocalSpeech:
             threads = int(os.getenv("STT_THREADS", "0")) or min(4, os.cpu_count() or 4)
             self._whisper = WhisperModel(self.stt_model, device="auto", compute_type="int8", cpu_threads=threads)
         self._tts = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
-        TurnDetector()  # download and cache the VAD model too
+        TurnDetector()  # download and cache the VAD model too; also pins the torch threads
         # Warm both models so the first real turn does not pay for loading and compiling.
         pcm = self.synthesize("Ready.")
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
