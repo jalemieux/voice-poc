@@ -59,6 +59,31 @@ GLM first token varies between 0.3 and 1.9 s across runs on OpenRouter for the
 same prompt; measured directly, thinking off gives 0.3 to 0.4 s and thinking on
 0.7 to 2.3 s.
 
+### Mode D on the curunir box (minipc-1: Ryzen 7 5825U, 16 threads, no GPU, Linux), fake brain
+
+Server-side driver on the box itself (no network), fake brain with a fixed
+0.4 s think time, faster-whisper `base` int8 on 4 threads, Kokoro on 8
+torch threads, Silero. Commit a7d03a1.
+
+| Turn | STT | brain first token | TTS first sentence | speech end → first audio |
+| ---- | --: | ----------------: | -----------------: | -----------------------: |
+| 1    | 499 |               417 |                567 |                     2136 |
+| 2    | 489 |               402 |     (interrupted)  |                          |
+| 3    | 413 |               402 |                603 |                     2072 |
+
+Same pipeline on the M5 Pro with the same fake brain: 1.6 to 1.7 s. The box
+costs about 0.4 s more per turn than the Mac, before any network.
+
+What it took to get there, in order of damage:
+
+- `silero_vad`'s loader calls `torch.set_num_threads(1)` at import, which
+  silently made Kokoro take 1.6 to 1.8 s per sentence in the server against
+  0.5 s standalone. Re-pinning the threads after each Silero load fixed it.
+- Whisper model choice on this CPU (4.5 s utterance): `large-v3-turbo` 6.3 s,
+  `small` 1.4 s, `base` 0.5 s. `base` transcribed the test sentences
+  correctly; it is the default to use on a CPU-only box.
+- faster-whisper on all 16 threads was no faster than on 4.
+
 ### Modes A to C
 
 | Question | Mode | speech end → playback (ms) | speech end → tool call | GLM first token | GLM total | GLM done → first audio |
