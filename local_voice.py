@@ -119,7 +119,11 @@ class LocalSpeech:
 
             import os
 
-            self._whisper = WhisperModel(self.stt_model, device="auto", compute_type="int8", cpu_threads=os.cpu_count() or 4)
+            # CTranslate2 and torch each bring an OpenMP pool; giving Whisper every core makes
+            # Kokoro, which runs right after it, several times slower. Measured on a 16-thread
+            # Ryzen: 4 threads for Whisper is as fast as 16, and Kokoro keeps its speed.
+            threads = int(os.getenv("STT_THREADS", "0")) or min(4, os.cpu_count() or 4)
+            self._whisper = WhisperModel(self.stt_model, device="auto", compute_type="int8", cpu_threads=threads)
         self._tts = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
         TurnDetector()  # download and cache the VAD model too
         # Warm both models so the first real turn does not pay for loading and compiling.
