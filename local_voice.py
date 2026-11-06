@@ -108,7 +108,14 @@ class LocalSpeech:
 
     def _load(self) -> None:
         t = time.monotonic()
+        import os
+
+        import torch
         from kokoro import KPipeline
+
+        # torch's default thread count left Kokoro at 1.6 s per short sentence on a 16-thread
+        # Ryzen; pinned to the physical core count it takes 0.5 s. No effect on Apple Silicon.
+        torch.set_num_threads(int(os.getenv("TTS_THREADS", "0")) or max(1, (os.cpu_count() or 2) // 2))
 
         if self.backend == "mlx":
             import mlx_whisper
