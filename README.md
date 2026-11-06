@@ -1,6 +1,6 @@
 # POC: realtime voice with Gemini Live + GLM
 
-A standalone experiment, not part of the curunir runtime. A browser talks to
+A standalone experiment, built for the Curunir agent framework (https://github.com/jalemieux/curunir, issue #606) but independent of it. A browser talks to
 Gemini Live through a small FastAPI backend. Three modes:
 
 - **A, Gemini only**: Gemini answers everything itself.
@@ -37,7 +37,6 @@ browser speakers <--ws-- server.py <-- Kokoro (local) <-- sentence splitter <-+
 Python 3.11+ (the SDK requires it).
 
 ```bash
-cd poc/voice-gemini-glm
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env    # fill in GEMINI_API_KEY and OPENROUTER_API_KEY
@@ -123,4 +122,4 @@ by hand too (they take 20 s to load).
 | Follow-up question        | Ask "and why?" after an answer                          |
 | GLM timeout/error         | Set `GLM_TIMEOUT_S=0.001` or a wrong key; Gemini says the agent did not answer |
 
-Results and the bottleneck analysis go in `FINDINGS.md`.
+Results and the bottleneck analysis are in `FINDINGS.md`.
