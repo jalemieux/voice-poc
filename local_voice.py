@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import platform
 import re
 import time
 
@@ -81,11 +82,20 @@ class TurnDetector:
         self._buf = np.zeros(0, dtype=np.float32)
 
 
+def stt_backend() -> str:
+    """"mlx" on Apple Silicon (Metal), "faster-whisper" (CTranslate2, CPU or CUDA) elsewhere."""
+    return "mlx" if platform.system() == "Darwin" and platform.machine() == "arm64" else "faster-whisper"
+
+
+DEFAULT_STT_MODEL = {"mlx": "mlx-community/whisper-large-v3-turbo", "faster-whisper": "large-v3-turbo"}
+
+
 class LocalSpeech:
     """Whisper for speech-to-text and Kokoro for text-to-speech, loaded on first use."""
 
-    def __init__(self, stt_model: str, tts_voice: str):
-        self.stt_model = stt_model
+    def __init__(self, stt_model: str | None, tts_voice: str):
+        self.backend = stt_backend()
+        self.stt_model = stt_model or DEFAULT_STT_MODEL[self.backend]
         self.tts_voice = tts_voice
         self._lock = asyncio.Lock()
         self._loaded = False
@@ -98,17 +108,23 @@ class LocalSpeech:
 
     def _load(self) -> None:
         t = time.monotonic()
-        import mlx_whisper
         from kokoro import KPipeline
 
-        self._whisper = mlx_whisper
+        if self.backend == "mlx":
+            import mlx_whisper
+
+            self._whisper = mlx_whisper
+        else:
+            from faster_whisper import WhisperModel
+
+            self._whisper = WhisperModel(self.stt_model, device="auto", compute_type="int8")
         self._tts = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
         TurnDetector()  # download and cache the VAD model too
         # Warm both models so the first real turn does not pay for loading and compiling.
         pcm = self.synthesize("Ready.")
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         self.transcribe(resample(audio, TTS_RATE, MIC_RATE))
-        log.info("local models loaded and warm in %.1fs (%s, kokoro %s)", time.monotonic() - t, self.stt_model, self.tts_voice)
+        log.info("local models loaded and warm in %.1fs (%s %s, kokoro %s)", time.monotonic() - t, self.backend, self.stt_model, self.tts_voice)
 
     def turn_detector(self) -> TurnDetector:
         return TurnDetector()
@@ -118,11 +134,15 @@ class LocalSpeech:
         audio = pcm16 if isinstance(pcm16, np.ndarray) else np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         if len(audio) < MIC_RATE * MIN_UTTERANCE_MS / 1000:
             return ""
-        result = self._whisper.transcribe(audio, path_or_hf_repo=self.stt_model, language="en")
-        segments = result.get("segments") or []
-        if segments and all(s.get("no_speech_prob", 0) > 0.6 for s in segments):
-            return ""
-        return result["text"].strip()
+        if self.backend == "mlx":
+            result = self._whisper.transcribe(audio, path_or_hf_repo=self.stt_model, language="en")
+            segments = result.get("segments") or []
+            if segments and all(s.get("no_speech_prob", 0) > 0.6 for s in segments):
+                return ""
+            return result["text"].strip()
+        segments, _ = self._whisper.transcribe(audio, language="en", beam_size=1)
+        segments = [s for s in segments if s.no_speech_prob <= 0.6]
+        return " ".join(s.text.strip() for s in segments).strip()
 
     def synthesize(self, text: str) -> bytes:
         """Text -> 24 kHz mono PCM16 bytes."""

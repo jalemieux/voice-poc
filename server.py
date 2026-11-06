@@ -57,7 +57,10 @@ GLM_REASONING = os.getenv("GLM_REASONING", "off").lower()
 # BLOCKING: Gemini waits silently for the answer (cleanest latency measurement).
 # NON_BLOCKING: Gemini may keep talking; the answer is delivered with scheduling=INTERRUPT.
 ASK_AGENT_BLOCKING = os.getenv("ASK_AGENT_BEHAVIOR", "BLOCKING").upper() != "NON_BLOCKING"
-LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL", "mlx-community/whisper-large-v3-turbo")
+LOCAL_STT_MODEL = os.getenv("LOCAL_STT_MODEL") or None  # default depends on the backend, see local_voice
+# Optional shared secret: when set, /ws requires ?token=<value>. Use it when the server is reachable
+# from the internet (Tailscale Funnel, a port forward), since a session spends the API keys.
+VOICE_TOKEN = os.getenv("VOICE_TOKEN", "")
 LOCAL_TTS_VOICE = os.getenv("LOCAL_TTS_VOICE", "af_heart")
 
 MIC_MIME = "audio/pcm;rate=16000"
@@ -221,6 +224,7 @@ class BrowserSession:
         self.ws = ws
         self.mode = mode
         self.offset_ms = 0.0
+        self.rtt_ms: int | None = None
         self.turn = Turn(n=1)
         self.turns: dict[int, Turn] = {1: self.turn}
         self.turns_done = 0
@@ -241,8 +245,11 @@ class BrowserSession:
         self.turns_done += 1
         self.turns_delegated += delegated
         await self.event("turn_complete", delegated=delegated, delegated_turns=f"{self.turns_delegated}/{self.turns_done}")
-        await self.send_json(self.turn.summary())
+        await self.send_json(self.summary(self.turn))
         self.new_turn()
+
+    def summary(self, turn: Turn) -> dict:
+        return {**turn.summary(), "rtt_ms": self.rtt_ms}
 
     async def send_audio(self, pcm: bytes, t: float) -> None:
         if self.turn.first_audio is None:
@@ -274,12 +281,13 @@ class BrowserSession:
             await self.send_json({"type": "pong", "t_client": ev["t_client"], "t_server": now_ms()})
         elif kind == "clock":
             self.offset_ms = float(ev["offset_ms"])
-            await self.event("clock_synced", offset_ms=round(self.offset_ms), rtt_ms=ev.get("rtt_ms"))
+            self.rtt_ms = ev.get("rtt_ms")
+            await self.event("clock_synced", offset_ms=round(self.offset_ms), rtt_ms=self.rtt_ms)
         elif kind == "playback_start":
             turn = self.turns.get(ev.get("turn"))
             if turn and turn.playback_start is None:
                 turn.playback_start = to_server_time(ev["t_client"], self.offset_ms)
-                await self.send_json(turn.summary())
+                await self.send_json(self.summary(turn))
         else:
             return False
         return True
@@ -395,7 +403,7 @@ class VoiceSession(BrowserSession):
             self.turn.interrupted = True
             await self.send_json({"type": "clear"})
             await self.event("interrupted")
-            await self.send_json(self.turn.summary())
+            await self.send_json(self.summary(self.turn))
             self.new_turn()
         if sc.input_transcription and sc.input_transcription.text:
             await self.send_json({"type": "transcript", "who": "user", "text": sc.input_transcription.text, "turn": self.turn.n})
@@ -459,7 +467,7 @@ class LocalVoiceSession(BrowserSession):
         await self.send_json({"type": "status", "state": "loading", "detail": "loading local speech models"})
         await self.speech.ready()
         self.vad = self.speech.turn_detector()
-        await self.send_json({"type": "status", "state": "connected", "model": f"{LOCAL_STT_MODEL} + kokoro/{LOCAL_TTS_VOICE}",
+        await self.send_json({"type": "status", "state": "connected", "model": f"{self.speech.backend}/{self.speech.stt_model} + kokoro/{LOCAL_TTS_VOICE}",
                               "mode": "local", "glm_model": OPENROUTER_MODEL})
         try:
             await self.pump_browser()
@@ -505,7 +513,7 @@ class LocalVoiceSession(BrowserSession):
         await self.send_json({"type": "clear"})
         self.turn.interrupted = True
         await self.event("interrupted")
-        await self.send_json(self.turn.summary())
+        await self.send_json(self.summary(self.turn))
         self.new_turn()
 
     async def respond(self, turn: Turn, pcm: bytes) -> None:
@@ -592,7 +600,10 @@ async def index():
 
 
 @app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket, mode: str = "gemini"):
+async def ws_endpoint(ws: WebSocket, mode: str = "gemini", token: str = ""):
+    if VOICE_TOKEN and token != VOICE_TOKEN:
+        await ws.close(code=4401)
+        return
     await ws.accept()
     if mode not in MODES:
         mode = "gemini"

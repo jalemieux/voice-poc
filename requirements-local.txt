@@ -1,5 +1,6 @@
-mlx-whisper
 kokoro
 soundfile
 numpy
 silero-vad
+mlx-whisper; sys_platform == "darwin"      # Apple Silicon: Whisper on Metal
+faster-whisper; sys_platform != "darwin"   # Linux/Windows: CTranslate2 on CPU or CUDA

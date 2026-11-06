@@ -15,8 +15,18 @@ $("connect").onclick = () => (ws ? disconnect() : connect());
 
 async function connect() {
   mode = document.querySelector("input[name=mode]:checked").value;
+  // Safari (iOS above all) only lets audio start inside the tap: create and resume the contexts
+  // and ask for the microphone here, before anything asynchronous.
+  try {
+    await startAudio();
+  } catch (e) {
+    setStatus(`audio error: ${e.message}`);
+    stopAudio();
+    return;
+  }
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws?mode=${mode}`);
+  const token = new URLSearchParams(location.search).get("token") || "";
+  ws = new WebSocket(`${proto}://${location.host}/ws?mode=${mode}&token=${encodeURIComponent(token)}`);
   ws.binaryType = "arraybuffer";
   setStatus("connecting");
   $("connect").textContent = "Disconnect";
@@ -37,7 +47,7 @@ async function onServerEvent(ev) {
       if (ev.state === "connected") {
         setStatus(`connected (${ev.mode}, ${ev.model})`);
         await syncClock();
-        await startAudio();
+        micLive = true;
         setStatus(`live (${ev.mode}, ${ev.model})`);
       } else if (ev.state === "loading") {
         setStatus(ev.detail);
@@ -83,8 +93,12 @@ async function syncClock() {
 }
 
 // ---- audio
+// The contexts run at whatever rate the device gives (iOS can change it when the mic opens);
+// the worklets resample to 16 kHz in and from 24 kHz out themselves.
+let micLive = false;
 async function startAudio() {
-  outCtx = new AudioContext({ sampleRate: 24000 });
+  outCtx = new AudioContext();
+  await outCtx.resume();
   await outCtx.audioWorklet.addModule("/static/player-worklet.js");
   playerNode = new AudioWorkletNode(outCtx, "player");
   playerNode.connect(outCtx.destination);
@@ -92,7 +106,8 @@ async function startAudio() {
     if (e.data.type === "playback_start") send({ type: "playback_start", turn: e.data.turn, t_client: Date.now() });
   };
 
-  micCtx = new AudioContext({ sampleRate: 16000 });
+  micCtx = new AudioContext();
+  await micCtx.resume();
   await micCtx.audioWorklet.addModule("/static/mic-worklet.js");
   micStream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -104,7 +119,7 @@ async function startAudio() {
   source.connect(micNode).connect(mute).connect(micCtx.destination);
   micNode.port.onmessage = (e) => {
     const m = e.data;
-    if (m.type === "pcm") { if (ws?.readyState === 1) ws.send(m.buf); }
+    if (m.type === "pcm") { if (micLive && ws?.readyState === 1) ws.send(m.buf); }
     else if (m.type === "speech_end") send({ type: "speech_end", t_client: Date.now() - m.silence_ms });
     else if (m.type === "speech_start") {
       // Gemini modes: stop local playback at once on barge-in; the server may have finished
@@ -121,6 +136,7 @@ async function startAudio() {
 }
 
 function stopAudio() {
+  micLive = false;
   micStream?.getTracks().forEach((t) => t.stop());
   micCtx?.close(); outCtx?.close();
   micCtx = outCtx = micStream = playerNode = null;
@@ -136,7 +152,7 @@ function renderTurn(t) {
   if (!row) { row = document.createElement("tr"); row.id = id; $("turns").querySelector("tbody").appendChild(row); }
   const cell = (k) => (d[k] === undefined ? "" : d[k]);
   const note = [t.interrupted ? "interrupted" : "", t.speech_end ? "" : "no speech end", t.question ? `q: ${t.question}` : ""].filter(Boolean).join("; ");
-  row.innerHTML = [t.n, mode, cell("speech_end_to_first_audio"), cell("speech_end_to_playback"), cell("speech_end_to_tool_call"),
+  row.innerHTML = [t.n, mode, t.rtt_ms ?? "", cell("speech_end_to_first_audio"), cell("speech_end_to_playback"), cell("speech_end_to_tool_call"),
     cell("stt"), cell("glm_first_token"), cell("glm_total"), cell("tts_first"), cell("glm_done_to_first_audio"), t.answer_chars || "",
     mode === "gemini" ? "" : mode === "local" ? "yes" : (t.tool_call ? "yes" : "no"), escapeHtml(note)]
     .map((v) => `<td>${v}</td>`).join("");

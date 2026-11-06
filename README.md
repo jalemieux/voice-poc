@@ -43,15 +43,32 @@ cp .env.example .env    # fill in GEMINI_API_KEY and OPENROUTER_API_KEY
 python server.py        # http://127.0.0.1:8787
 ```
 
-Mode D needs Apple Silicon and the local speech stack on top:
+Mode D needs the local speech stack on top:
 
 ```bash
 pip install -r requirements-local.txt
 brew install espeak-ng     # optional: Kokoro falls back to it for words outside its dictionary
 ```
 
-The first connect in mode D downloads about 2 GB of models (Whisper turbo,
-Kokoro) and then loads and warms them, about 20 s; later connects are instant.
+On Apple Silicon Whisper runs on MLX; on Linux (or Intel) it runs through
+faster-whisper on the CPU, or CUDA when present, with `large-v3-turbo` as the
+default model. On a small CPU set `LOCAL_STT_MODEL=small` (or `base`) in
+`.env`. The first connect in mode D downloads about 2 GB of models and then
+loads and warms them, 20 s on a Mac, longer on a CPU; later connects are
+instant.
+
+### From a phone, or any machine that is not localhost
+
+Safari and Chrome only open the microphone on HTTPS (localhost excepted), so
+the server must sit behind TLS: Tailscale `serve` (tailnet only) or `funnel`
+(public), or any reverse proxy. The page is iPhone-safe: audio starts inside
+the Connect tap and the worklets resample to and from the device's own rate.
+The RTT column in the table is the browser-to-server round trip measured at
+connect, so the network's share of a turn is visible.
+
+When the server is reachable from the internet, set `VOICE_TOKEN` in `.env`
+and open the page as `/?token=<value>`; the WebSocket refuses anything else.
+A session spends the API keys, so do not expose the server without it.
 
 Open the page in Chrome, pick a mode, press Connect and allow the microphone.
 Use headphones: the browser's energy VAD and Gemini's barge-in both react to
@@ -101,6 +118,7 @@ dropped instead of being sent back, so no stale answer is spoken.
 
 ```bash
 .venv/bin/python -m pytest -q tests
+node tests/js/worklets.test.mjs    # the two resamplers at a 48 kHz device rate
 ```
 
 The tests cover the OpenRouter streaming client (answer, first-token timing,

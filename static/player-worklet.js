@@ -1,11 +1,14 @@
-// Plays queued 24 kHz Int16 PCM chunks. "mark" tags following chunks with a turn id so the
-// first sample of each turn can be reported; "clear" drops everything queued (interruption).
+// Plays queued 24 kHz Int16 PCM chunks at the device rate (linear resampling). "mark" tags
+// following chunks with a turn id so the first sample of each turn can be reported; "clear"
+// drops everything queued (interruption).
+const IN_RATE = 24000;
 class Player extends AudioWorkletProcessor {
   constructor() {
     super();
     this.queue = [];
     this.cur = null;
-    this.pos = 0;
+    this.pos = 0;                      // fractional read position into cur
+    this.step = IN_RATE / sampleRate;  // source samples per output sample
     this.turn = null;
     this.reported = null;
     this.port.onmessage = (e) => {
@@ -20,6 +23,7 @@ class Player extends AudioWorkletProcessor {
       } else if (m.type === "clear") {
         this.queue = [];
         this.cur = null;
+        this.last = null;
         this.pos = 0;
       }
     };
@@ -33,17 +37,23 @@ class Player extends AudioWorkletProcessor {
         const item = this.queue.shift();
         if (!item) break;
         this.cur = item.f;
-        this.pos = 0;
+        this.pos = Math.max(0, this.pos - (this.last ? this.last.length : 0)); // carry the fraction over
+        this.last = null;
         if (item.turn !== null && item.turn !== this.reported) {
           this.reported = item.turn;
           this.port.postMessage({ type: "playback_start", turn: item.turn });
         }
       }
-      const n = Math.min(out.length - i, this.cur.length - this.pos);
-      out.set(this.cur.subarray(this.pos, this.pos + n), i);
-      i += n;
-      this.pos += n;
-      if (this.pos >= this.cur.length) this.cur = null;
+      const src = this.cur;
+      while (i < out.length && this.pos < src.length) {
+        const k = Math.floor(this.pos);
+        const frac = this.pos - k;
+        const a = src[k];
+        const b = k + 1 < src.length ? src[k + 1] : a;
+        out[i++] = a + (b - a) * frac;
+        this.pos += this.step;
+      }
+      if (this.pos >= src.length) { this.last = src; this.cur = null; }
     }
     for (; i < out.length; i++) out[i] = 0;
     return true;
