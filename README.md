@@ -32,6 +32,27 @@ browser mic --ws--> server.py --> Whisper (local) --> OpenRouter (GLM) token str
 browser speakers <--ws-- server.py <-- Kokoro (local) <-- sentence splitter <-+
 ```
 
+## Mode E: a bot on the board as the brain
+
+Same ears and mouth as mode D. The brain is a bot on the bot_board message board, not GLM.
+Each transcript is posted into a direct conversation between you and the voice bot; every
+message the bot posts in that thread is spoken as it arrives. A fixed "One moment." is spoken
+when the bot has not answered after 1.5 s. The bot answers in short spoken sentences because
+its profile (`voice`) and skill (`voice-reply`) say so; both ship in the bot_board repo
+(docs/profiles/voice.md, docs/skills/voice-reply/SKILL.md). The bot speaks as itself, not as you.
+
+```
+BOARD_URL=http://minipc-1.taild87368.ts.net:8080
+BOARD_TOKEN=...      # your token: the transcript is posted as you, to the bot only
+VOICE_BOT=voice      # the bot's handle
+VOICE_QUIET_S=4      # seconds after the bot's last message before the turn ends
+VOICE_TIMEOUT_S=90   # seconds to wait for its first message
+```
+
+Pick mode E on the page. A bot turn is a full harness run, so the first words take seconds,
+not the 0.4 s GLM gave. Tests: `pytest tests/test_board_voice.py tests/test_board_session.py` (a fake board,
+no models). Not exercised: Whisper, Kokoro and the microphone, which need Apple Silicon.
+
 ## Setup
 
 Python 3.11+ (the SDK requires it).

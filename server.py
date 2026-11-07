@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
 
+from board_voice import BoardBrain, BoardError
 from local_voice import LocalSpeech, SentenceSplitter, TurnDetector
 
 HERE = Path(__file__).parent
@@ -80,7 +81,7 @@ PROMPT_ALWAYS_DELEGATE = (
     "it returns word for word. Never answer, greet, acknowledge or comment yourself, and never add anything "
     "to the agent's answer. If ask_agent returns an error, say only: the agent did not answer."
 )
-MODES = {"gemini": PROMPT_GEMINI_ONLY, "glm": PROMPT_WITH_AGENT, "always": PROMPT_ALWAYS_DELEGATE, "local": None}
+MODES = {"gemini": PROMPT_GEMINI_ONLY, "glm": PROMPT_WITH_AGENT, "always": PROMPT_ALWAYS_DELEGATE, "local": None, "board": None}
 
 GLM_SYSTEM = (
     "You are the reasoning engine behind a voice assistant. Your answer will be read aloud. "
@@ -579,6 +580,58 @@ class LocalVoiceSession(BrowserSession):
             spoken.append(sentence)
 
 
+class BoardVoiceSession(LocalVoiceSession):
+    """Mode board (E): the same ears and mouth as local, but the brain is a bot on the board (board_voice.py).
+
+    Each transcript is posted to the voice bot's conversation; every message the bot posts in that thread
+    is spoken as it arrives. A fixed filler is spoken when the bot is slow to start.
+    """
+    FILLER = "One moment."
+    FILLER_AFTER_S = 1.5
+
+    def __init__(self, ws: WebSocket, http: httpx.AsyncClient, speech: LocalSpeech, brain: BoardBrain):
+        super().__init__(ws, http, "", speech)
+        self.brain = brain
+
+    async def generate(self, turn: Turn, spoken: list[str]) -> None:
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        speaker = asyncio.create_task(self.speak_from(queue, turn, spoken))
+
+        async def filler():
+            await asyncio.sleep(self.FILLER_AFTER_S)
+            await queue.put(self.FILLER)
+        filler_task = asyncio.create_task(filler())
+        turn.glm_start = now_ms()
+        try:
+            async for text in self.brain.ask(turn.question):
+                filler_task.cancel()
+                if turn.glm_first_token is None:
+                    turn.glm_first_token = now_ms()
+                    await self.event("glm_first_token")
+                splitter = SentenceSplitter()
+                for sentence in [*splitter.feed(text), splitter.flush()]:
+                    if sentence:
+                        await queue.put(sentence)
+            if turn.glm_first_token is None:
+                raise BoardError("the bot returned nothing")
+        except BoardError as e:
+            await self.event("glm_error", detail=str(e))
+            await queue.put("Sorry, the board did not answer.")
+        except asyncio.CancelledError:
+            speaker.cancel()
+            raise
+        finally:
+            filler_task.cancel()
+            turn.glm_done = now_ms()
+            await queue.put(None)
+            try:
+                await speaker
+            except asyncio.CancelledError:
+                raise
+        await self.event("glm_done", first_token_ms=turn.durations().get("glm_first_token"),
+                         total_ms=turn.durations().get("glm_total"))
+
+
 # --------------------------------------------------------------------------- app
 
 app = FastAPI(title="voice-poc")
@@ -598,8 +651,8 @@ async def ws_endpoint(ws: WebSocket, mode: str = "gemini"):
         mode = "gemini"
     gemini_key = os.getenv("GEMINI_API_KEY", "")
     openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
-    needs_gemini = mode != "local"
-    needs_agent_key = mode != "gemini" and "openrouter.ai" in AGENT_BASE_URL
+    needs_gemini = mode not in ("local", "board")
+    needs_agent_key = mode not in ("gemini", "board") and "openrouter.ai" in AGENT_BASE_URL
     if (needs_gemini and not gemini_key) or (needs_agent_key and not openrouter_key):
         await ws.send_text(json.dumps({"type": "status", "state": "error",
                                        "detail": "GEMINI_API_KEY (modes A-C) and OPENROUTER_API_KEY (modes B-D) must be set"}))
@@ -607,7 +660,12 @@ async def ws_endpoint(ws: WebSocket, mode: str = "gemini"):
         return
     async with httpx.AsyncClient() as http:
         try:
-            if mode == "local":
+            if mode == "board":
+                brain = BoardBrain(http)
+                if not brain.configured():
+                    raise RuntimeError("BOARD_URL and BOARD_TOKEN must be set for mode board (VOICE_BOT names the bot)")
+                await BoardVoiceSession(ws, http, speech, brain).run()
+            elif mode == "local":
                 await LocalVoiceSession(ws, http, openrouter_key, speech).run()
             else:
                 await VoiceSession(ws, mode, genai.Client(api_key=gemini_key), http, openrouter_key).run()
