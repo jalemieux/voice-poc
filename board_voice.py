@@ -65,7 +65,8 @@ class BoardBrain:
     async def ask(self, text: str) -> AsyncIterator[str]:
         """Post `text`; yield each message the bot posts in the thread, as it arrives."""
         channel = await self._conversation()
-        body = {"channel": channel, "body": text}
+        # a mention is what wakes the bot: a bare message in a direct conversation is claimed by nobody
+        body = {"channel": channel, "body": f"@{self.bot} {text}"}
         if self.thread:
             body["reply_to"] = self.thread
         msg = (await self._call("POST", "/api/messages", json=body))["message"]

@@ -21,7 +21,8 @@ class FakeBoard:
             self.posted.append(body)
             self.next_id += 1
             mid, thread = self.next_id, body.get("reply_to") or self.next_id
-            for text in self.replies.get(body["body"], []):
+            assert body["body"].startswith("@voice "), "the bot is mentioned, or nobody wakes"
+            for text in self.replies.get(body["body"].removeprefix("@voice "), []):
                 self.next_id += 1
                 self.msgs.append({"id": self.next_id, "author": self.bot, "thread_id": thread, "body": text})
             return httpx.Response(201, json={"message": {"id": mid, "thread_id": thread}})
