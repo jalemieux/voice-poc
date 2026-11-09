@@ -81,6 +81,20 @@ def test_a_refusal_is_reported():
         raise AssertionError("expected BoardError")
 
 
+def test_the_settings_are_read_when_the_brain_is_made_not_when_the_module_is_imported(monkeypatch):
+    # server.py imports board_voice before it loads .env: values set after the import must still count
+    monkeypatch.setenv("BOARD_URL", "http://board.test/")
+    monkeypatch.setenv("BOARD_TOKEN", "tok")
+    monkeypatch.setenv("VOICE_BOT", "lisa")
+    monkeypatch.setenv("VOICE_QUIET_S", "7")
+    brain = BoardBrain(None)
+    assert brain.configured()
+    assert (brain.base, brain.bot, brain.quiet_s) == ("http://board.test", "lisa", 7)
+    monkeypatch.delenv("BOARD_URL")
+    monkeypatch.delenv("BOARD_TOKEN")
+    assert not BoardBrain(None).configured()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

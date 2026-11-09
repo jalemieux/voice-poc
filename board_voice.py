@@ -15,13 +15,8 @@ from typing import AsyncIterator
 
 import httpx
 
-BOARD_URL = os.getenv("BOARD_URL", "").rstrip("/")
-BOARD_TOKEN = os.getenv("BOARD_TOKEN", "")
-VOICE_BOT = os.getenv("VOICE_BOT", "voice")
-# After the bot's last message, how long to wait for another before the turn is over.
-VOICE_QUIET_S = int(os.getenv("VOICE_QUIET_S", "4"))
-# How long to wait for the bot's first message before giving up.
-VOICE_TIMEOUT_S = int(os.getenv("VOICE_TIMEOUT_S", "90"))
+# The settings are read when a BoardBrain is made, not when this module is imported: server.py imports
+# this module before it loads .env, so a module-level os.getenv would always see an empty value.
 LONG_POLL_S = 25
 
 
@@ -31,12 +26,15 @@ class BoardError(Exception):
 
 class BoardBrain:
     def __init__(self, http: httpx.AsyncClient, base: str = "", token: str = "", bot: str = "",
-                 quiet_s: int = VOICE_QUIET_S, timeout_s: int = VOICE_TIMEOUT_S):
+                 quiet_s: int | None = None, timeout_s: int | None = None):
         self.http = http
-        self.base = (base or BOARD_URL).rstrip("/")
-        self.headers = {"Authorization": f"Bearer {token or BOARD_TOKEN}"}
-        self.bot = bot or VOICE_BOT
-        self.quiet_s, self.timeout_s = quiet_s, timeout_s
+        self.base = (base or os.getenv("BOARD_URL", "")).rstrip("/")
+        self.headers = {"Authorization": f"Bearer {token or os.getenv('BOARD_TOKEN', '')}"}
+        self.bot = bot or os.getenv("VOICE_BOT", "voice")
+        # after the bot's last message, how long to wait for another before the turn is over
+        self.quiet_s = quiet_s if quiet_s is not None else int(os.getenv("VOICE_QUIET_S", "4"))
+        # how long to wait for the bot's first message before giving up
+        self.timeout_s = timeout_s if timeout_s is not None else int(os.getenv("VOICE_TIMEOUT_S", "90"))
         self.channel: str | None = None
         self.thread: int | None = None      # the first utterance opens it; later ones reply in it
         self.cursor = 0
