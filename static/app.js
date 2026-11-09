@@ -108,8 +108,9 @@ async function startAudio() {
     else if (m.type === "speech_end") send({ type: "speech_end", t_client: Date.now() - m.silence_ms });
     else if (m.type === "speech_start") {
       // Gemini modes: stop local playback at once on barge-in; the server may have finished
-      // sending a reply that is still playing here. In local mode the server's VAD decides.
-      if (mode !== "local") playerNode?.port.postMessage({ type: "clear" });
+      // sending a reply that is still playing here. In local and board modes the server's VAD decides:
+      // the energy VAD also fires on the reply leaking into the mic, which would clear every sentence.
+      if (mode === "gemini" || mode === "glm" || mode === "always") playerNode?.port.postMessage({ type: "clear" });
       send({ type: "speech_start" });
     }
     else if (m.type === "level") {
